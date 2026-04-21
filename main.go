@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -25,7 +26,7 @@ func main() {
 	router := gin.Default()
 	router.Use(cors.Default())
 	router.Use(OrderMiddleware(orderService))
-	router.GET("/order/fetch", fetchOrders)
+	router.POST("/order", createOrder)
 	router.GET("/order/:id", getOrder)
 	router.PUT("/order", updateOrder)
 	router.GET("/health", func(c *gin.Context) {
@@ -45,8 +46,8 @@ func OrderMiddleware(orderService *OrderService) gin.HandlerFunc {
 	}
 }
 
-// Fetches orders from the order queue and stores them in database
-func fetchOrders(c *gin.Context) {
+// Receives a new order from an external service and stores it in database
+func createOrder(c *gin.Context) {
 	client, ok := c.MustGet("orderService").(*OrderService)
 	if !ok {
 		log.Printf("Failed to get order service")
@@ -54,31 +55,36 @@ func fetchOrders(c *gin.Context) {
 		return
 	}
 
-	// Get orders from the queue
-	orders, err := getOrdersFromQueue()
-	if err != nil {
-		log.Printf("Failed to fetch orders from queue: %s", err)
-		c.AbortWithStatus(http.StatusInternalServerError)
+	var order Order
+	if err := c.BindJSON(&order); err != nil {
+		log.Printf("Failed to unmarshal order: %s", err)
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	// Save orders to database
-	err = client.repo.InsertOrders(orders)
+	if order.OrderID == "" {
+		order.OrderID = strconv.FormatInt(time.Now().UnixMilli(), 10)
+	} else {
+		id, err := strconv.Atoi(order.OrderID)
+		if err != nil {
+			log.Printf("Failed to convert order id to int: %s", err)
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		order.OrderID = strconv.FormatInt(int64(id), 10)
+	}
+
+	// New inbound orders start in pending state.
+	order.Status = Pending
+
+	err := client.repo.InsertOrders([]Order{order})
 	if err != nil {
 		log.Printf("Failed to save orders to database: %s", err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	// Return the orders to be processed
-	orders, err = client.repo.GetPendingOrders()
-	if err != nil {
-		log.Printf("Failed to get pending orders from database: %s", err)
-		c.AbortWithStatus(http.StatusInternalServerError)
-		return
-	}
-
-	c.IndentedJSON(http.StatusOK, orders)
+	c.IndentedJSON(http.StatusCreated, order)
 }
 
 // Gets a single order from database by order ID
