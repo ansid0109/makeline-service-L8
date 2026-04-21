@@ -92,11 +92,9 @@ export ORDER_QUEUE_NAME=orders
 
 > NOTE: If you are using Azure Service Bus, you will want your `order-service` to write orders to it instead of RabbitMQ. If that is the case, then you'll need to update the [`docker-compose.yml`](./docker-compose.yml) and modify the environment variables for the `order-service` to include the proper connection info to connect to Azure Service Bus. Also you will need to add the `ORDER_QUEUE_TRANSPORT=tls` configuration to connect over TLS.
 
-## Database options
+## Database setup
 
-You also have the option to write orders to either MongoDB or Azure CosmosDB.
-
-### Option 1: MongoDB
+This app writes orders to MongoDB only.
 
 If you are using a local MongoDB container, run the following commands:
 
@@ -105,125 +103,6 @@ export ORDER_DB_URI=mongodb://localhost:27017
 export ORDER_DB_NAME=orderdb
 export ORDER_DB_COLLECTION_NAME=orders
 ```
-
-### Option 2: Azure CosmosDB
-
-To run this against Azure CosmosDB, you will need to create the CosmosDB account, the database, and collection/container. You can do this using the Azure CLI.
-
-Run the following command to create the resource group for the Azure CosmosDB Account.
-
-```bash
-RGNAME=<resource-group-name>
-LOCNAME=<location>
-az group create --name $RGNAME --location $LOCNAME
-```
-
-Also note that Azure CosmosDB supports multiple APIs. This app supports both the MongoDB and SQL APIs. Choosing one model over the other has significant implications on the authentication method your app can use.
-
-If you choose to use the MongoDB API, then you are limited to using account keys to authenticate. If you choose to use the SQL API, then you can use Microsoft Entra Workload Identity for a passwordless experience (this is the recommended approach).
-
-If you choose to use Workload Identity, you will need to do the following tasks:
-
-1. Assign the built-in `DocumentDB Account Contributor` role to the identity that is running the app, which in this case will be your account.
-1. Create a custom role for reading and writing data using Azure RBAC and assign it to the identity that is running the app, which in this case will be your account.
-1. Disable the account key authentication method for the CosmosDB account (this is highly recommended).
-
-You can do this using the Azure CLI.
-
-```bash
-# create the cosmosdb account
-COSMOSDBNAME=<cosmosdb-account-name>
-az cosmosdb create --name $COSMOSDBNAME --resource-group $RGNAME --kind GlobalDocumentDB --minimal-tls-version Tls12
-
-PRINCIPALID=$(az ad signed-in-user show --query id -o tsv)
-COSMOSDBID=$(az cosmosdb show --name $COSMOSDBNAME --resource-group $RGNAME --query id -o tsv)
-ROLEID=$(az role definition list -n "DocumentDB Account Contributor" --query "[].id" -o tsv)
-
-# grant yourself the DocumentDB Account Contributor role
-az role assignment create --role $ROLEID --assignee $PRINCIPALID --scope $COSMOSDBID
-
-# create a custom role for reading and writing data
-cat <<EOF > customRole.json
-{
-    "RoleName": "MyCosmosDBDataContributor",
-    "Type": "CustomRole",
-    "AssignableScopes": ["${COSMOSDBID}"],
-    "Permissions": [{
-        "DataActions": [
-            "Microsoft.DocumentDB/databaseAccounts/readMetadata",
-            "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/*",
-            "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/*",
-        ]
-    }]
-}
-EOF
-
-ROLEDEFINITIONID=$(az cosmosdb sql role definition create --account-name $COSMOSDBNAME --resource-group $RGNAME --body @customRole.json --query id -o tsv)
-
-# assign the custom role to yourself
-az cosmosdb sql role assignment create --account-name $COSMOSDBNAME --resource-group $RGNAME --scope $COSMOSDBID --principal-id $PRINCIPALID --role-definition-id $ROLEDEFINITIONID
-
-# disable account key authentication
-az cosmosdb update --name $COSMOSDBNAME --resource-group $RGNAME --disable-key-based-metadata-write-access
-```
-
-If you are using the SQL API, you will need to create the database and container. Run the following commands to create the database and container.
-
-```bash
-COSMOSDBPARTITIONKEY=storeId
-az cosmosdb sql database create --account-name $COSMOSDBNAME --name orderdb --resource-group $RGNAME
-az cosmosdb sql container create --account-name $COSMOSDBNAME --database-name orderdb --name orders --resource-group $RGNAME --partition-key-path /$COSMOSDBPARTITIONKEY
-```
-
-If you are using the MongoDB API, you will need to create the database and collection. Run the following commands to create the database and collection.
-
-```bash
-az cosmosdb create --name $COSMOSDBNAME --resource-group $RGNAME --kind MongoDB --minimal-tls-version Tls12
-az cosmosdb mongodb database create --account-name $COSMOSDBNAME --name orderdb --resource-group $RGNAME
-az cosmosdb mongodb collection create --account-name $COSMOSDBNAME --database-name orderdb --name orders --resource-group $RGNAME
-```
-
-If you are not using Workload Identity authentication, get the connection information for the Azure Service Bus queue and save the values to environment variables. Otherwise, skip this step.
-
-```bash
-COSMOSDBUSERNAME=$COSMOSDBNAME
-COSMOSDBPASSWORD=$(az cosmosdb keys list --name $COSMOSDBNAME --resource-group $RGNAME --query primaryMasterKey -o tsv)
-````
-
-Finally, set the environment variables.
-
-```bash
-# if database requires SQL API with Workload Identity
-# set the following environment variables
-export ORDER_DB_API=cosmosdbsql
-export ORDER_DB_URI=https://$COSMOSDBNAME.documents.azure.com:443/
-export ORDER_DB_NAME=orderdb
-export ORDER_DB_CONTAINER_NAME=orders
-export USE_WORKLOAD_IDENTITY_AUTH="true"
-export ORDER_DB_PARTITION_KEY=$COSMOSDBPARTITIONKEY
-export ORDER_DB_PARTITION_VALUE="pets"
-
-# if database requires SQL API with account key
-# set the following environment variables
-export ORDER_DB_API=cosmosdbsql
-export ORDER_DB_URI=https://$COSMOSDBNAME.documents.azure.com:443/
-export ORDER_DB_NAME=orderdb
-export ORDER_DB_CONTAINER_NAME=orders
-export ORDER_DB_PASSWORD=$COSMOSDBPASSWORD
-export ORDER_DB_PARTITION_KEY=$COSMOSDBPARTITIONKEY
-export ORDER_DB_PARTITION_VALUE="pets"
-
-# if database requires MongoDB API with account key
-# set the following environment variables
-export ORDER_DB_API=mongodb
-export ORDER_DB_URI=mongodb://$COSMOSDBNAME.mongo.cosmos.azure.com:10255/?retryWrites=false
-export ORDER_DB_NAME=orderdb
-export ORDER_DB_COLLECTION_NAME=orders
-export ORDER_DB_USERNAME=$COSMOSDBUSERNAME
-export ORDER_DB_PASSWORD=$COSMOSDBPASSWORD
-```
-
-> NOTE: With Azure CosmosDB, you must ensure the orderdb database and an unsharded orders collection exist before running the app. Otherwise you will get a "server selection error".
 
 ## Running the app locally
 
@@ -284,18 +163,3 @@ db.orders.find()
 db.orders.findOne({status: 1})
 ```
 
-To view the orders in Azure CosmosDB using `mongosh`, open a terminal an run the following command:
-
-```bash
-# connect to cosmosdb
-mongosh -u $USERNAME -p $PASSWORD --tls --retryWrites=false mongodb://$COSMOSDBNAME.mongo.cosmos.azure.com:10255/orderdb
-
-# show collections and confirm orders exists
-show collections
-
-# get the orders
-db.orders.find()
-
-# get completed orders
-db.orders.findOne({status: 1})
-```

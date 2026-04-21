@@ -10,25 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Valid database API types
-const (
-	AZURE_COSMOS_DB_SQL_API = "cosmosdbsql"
-)
-
 func main() {
 	var orderService *OrderService
 
-	// Get the database API type
-	apiType := os.Getenv("ORDER_DB_API")
-	switch apiType {
-	case "cosmosdbsql":
-		log.Printf("Using Azure CosmosDB SQL API")
-	default:
-		log.Printf("Using MongoDB API")
-	}
+	log.Printf("Using MongoDB API")
 
 	// Initialize the database
-	orderService, err := initDatabase(apiType)
+	orderService, err := initDatabase()
 	if err != nil {
 		log.Printf("Failed to initialize database: %s", err)
 		os.Exit(1)
@@ -185,45 +173,16 @@ func getEnvVar(varName string, fallbackVarNames ...string) string {
 	return value
 }
 
-// Initializes the database based on the API type
-func initDatabase(apiType string) (*OrderService, error) {
-	dbURI := getEnvVar("AZURE_COSMOS_RESOURCEENDPOINT", "ORDER_DB_URI")
+// Initializes the database
+func initDatabase() (*OrderService, error) {
+	dbURI := getEnvVar("ORDER_DB_URI")
 	dbName := getEnvVar("ORDER_DB_NAME")
-
-	switch apiType {
-	case AZURE_COSMOS_DB_SQL_API:
-		containerName := getEnvVar("ORDER_DB_CONTAINER_NAME")
-		dbPartitionKey := getEnvVar("ORDER_DB_PARTITION_KEY")
-		dbPartitionValue := getEnvVar("ORDER_DB_PARTITION_VALUE")
-
-		// check if USE_WORKLOAD_IDENTITY_AUTH is set
-		useWorkloadIdentityAuth := os.Getenv("USE_WORKLOAD_IDENTITY_AUTH")
-		if useWorkloadIdentityAuth == "" {
-			useWorkloadIdentityAuth = "false"
-		}
-
-		if useWorkloadIdentityAuth == "true" {
-			cosmosRepo, err := NewCosmosDBOrderRepoWithManagedIdentity(dbURI, dbName, containerName, PartitionKey{dbPartitionKey, dbPartitionValue})
-			if err != nil {
-				return nil, err
-			}
-			return NewOrderService(cosmosRepo), nil
-		} else {
-			dbPassword := os.Getenv("ORDER_DB_PASSWORD")
-			cosmosRepo, err := NewCosmosDBOrderRepo(dbURI, dbName, containerName, dbPassword, PartitionKey{dbPartitionKey, dbPartitionValue})
-			if err != nil {
-				return nil, err
-			}
-			return NewOrderService(cosmosRepo), nil
-		}
-	default:
-		collectionName := getEnvVar("ORDER_DB_COLLECTION_NAME")
-		dbUsername := os.Getenv("ORDER_DB_USERNAME")
-		dbPassword := os.Getenv("ORDER_DB_PASSWORD")
-		mongoRepo, err := NewMongoDBOrderRepo(dbURI, dbName, collectionName, dbUsername, dbPassword)
-		if err != nil {
-			return nil, err
-		}
-		return NewOrderService(mongoRepo), nil
+	collectionName := getEnvVar("ORDER_DB_COLLECTION_NAME")
+	dbUsername := os.Getenv("ORDER_DB_USERNAME")
+	dbPassword := os.Getenv("ORDER_DB_PASSWORD")
+	mongoRepo, err := NewMongoDBOrderRepo(dbURI, dbName, collectionName, dbUsername, dbPassword)
+	if err != nil {
+		return nil, err
 	}
+	return NewOrderService(mongoRepo), nil
 }
